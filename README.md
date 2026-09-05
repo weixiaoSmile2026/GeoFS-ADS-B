@@ -1,6 +1,7 @@
 # ✈️ GeoFS ADS-B Fix & Real-time Radar Tracker
 
-<FollowUp label="Want to add Shields.io status badges (e.g. License, Discord online count) to the top of your README?" query="How do I add Shields.io status badges for License and Discord to the top of my GitHub README?"/>
+![](https://i.ibb.co/FbTFrFLq/image.png)
+
 
 An open-source, high-performance solution designed to fix the long-broken native ADS-B tracking in [GeoFS](https://www.geo-fs.com/). 
 
