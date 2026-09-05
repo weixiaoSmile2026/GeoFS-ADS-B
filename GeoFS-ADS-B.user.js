@@ -2,8 +2,8 @@
 // @name         GeoFS ADS-B
 // @author       Smile and SeaBus
 // @namespace    geofs.opensky.adsb.selfhosted
-// @version      1.1.0
-// @description  ADS-B can be used in GeoFS
+// @version      1.3.0
+// @description  ADS-B can be used in GeoFS (Depth Tested Labels)
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
 // @run-at       document-idle
@@ -134,15 +134,27 @@
                 : { dimensions: new Cesium.Cartesian3(38, 34, 12), material: Cesium.Color.YELLOW.withAlpha(0.5), outline: true, outlineColor: Cesium.Color.BLACK },
             label: CONFIG.SHOW_LABEL
                 ? {
-                      text: callsign,
-                      font: '13px monospace',
-                      fillColor: Cesium.Color.CYAN,
+                      text: ' ' + callsign.trim() + ' ',
+                      font: 'bold 15px "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+                      fillColor: Cesium.Color.WHITE,
                       outlineColor: Cesium.Color.BLACK,
-                      outlineWidth: 2,
+                      outlineWidth: 4,
                       style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                      pixelOffset: new Cesium.Cartesian2(0, -28),
+                      showBackground: true,
+                      backgroundColor: new Cesium.Color(0.08, 0.08, 0.08, 0.65),
+                      backgroundPadding: new Cesium.Cartesian2(8, 5),
+                      pixelOffset: new Cesium.Cartesian2(0, -35),
+                      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
                       verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-                      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+
+                      // 1. 關閉無限深度穿越：改為 0（或是完全不寫），開啟正常的 3D 遮擋測試
+                      //    這能防止標籤穿透你自己的駕駛艙或飛機模型
+                      disableDepthTestDistance: 0,
+
+                      // 2. 將標籤稍微向鏡頭推進 2 公尺，防止被該 ADS-B 飛機自身的 3D 模組邊緣切掉
+                      eyeOffset: new Cesium.Cartesian3(0, 0, -2.0),
+
+                      scaleByDistance: new Cesium.NearFarScalar(100, 1.0, 50000, 0.6)
                   }
                 : undefined,
         });
@@ -263,8 +275,8 @@
             const hpr = new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(snap.heading), 0, 0);
             t2.entity.position = position;
             t2.entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
-            if (t2.entity.label && t2.entity.label.text.getValue() !== t2.callsign) {
-                t2.entity.label.text = t2.callsign;
+            if (t2.entity.label && t2.entity.label.text.getValue() !== ' ' + t2.callsign.trim() + ' ') {
+                t2.entity.label.text = ' ' + t2.callsign.trim() + ' ';
             }
         });
     }
