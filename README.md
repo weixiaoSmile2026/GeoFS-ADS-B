@@ -50,9 +50,10 @@ The backend filters and outputs clean JSON payload:
 }
 
 
-# 💬 Community & Support
+
+## 💬 Community & Support
 Have questions, bug reports, or feature requests? Join our community on Discord:
 👉 [Join our Discord Server](https://discord.gg/wy9cRdmDeF)
 
-# 📄 License
+## 📄 License
 Distributed under the Apache License 2.0. See LICENSE for more information.
