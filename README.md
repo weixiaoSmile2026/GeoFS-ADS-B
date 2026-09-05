@@ -49,7 +49,7 @@ The backend filters and outputs clean JSON payload:
   ]
 }
 
-
+```
 
 ## 💬 Community & Support
 Have questions, bug reports, or feature requests? Join our community on Discord:
