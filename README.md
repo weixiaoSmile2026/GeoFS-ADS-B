@@ -11,7 +11,7 @@ This project revives real-world flight tracking with a robust multi-source backe
 
 ## 🔥 Key Features & Fixes
 
-* **Fixing Long-Broken GeoFS ADS-B**: GeoFS's native ADS-B feature has been non-functional for a long time due to API rate limits and source outages. We solved this by building a multi-source parallel poller (`adsb.lol`, `airplanes.live`, and `adsb.fi`) paired with a 45-second TTL memory cache, ensuring 24/7 stable tracking for 10,000+ aircraft without data drops.
+* **Fixing Long-Broken GeoFS ADS-B**: GeoFS's native ADS-B feature has been non-functional for a long time due to API rate limits and source outages. We solved this by building a multi-source parallel poller (`adsb.lol`, `airplanes.live`) paired with a 45-second TTL memory cache, ensuring 24/7 stable tracking for 10,000+ aircraft without data drops.
 * **Aircraft Type Matching**: Automatically parses `icao_type` codes (e.g., `B77W`, `A388`, `C172`) to dynamically render distinct 2D/3D icons for jets, heavy freighters, general aviation, and helicopters instead of a single default icon.
 * **60 FPS Smooth Interpolation (Lerp)**：Implements vector linear interpolation for positions and headings in memory. Even with 5-second API refresh intervals, aircraft movement and rotations render smoothly at 60 FPS without stuttering or "teleporting".
 * **Performance-Optimized Canvas**: Built on Canvas rendering to maintain smooth panning and zooming. Map transformations stay synchronized with frame rendering, eliminating icon offset bugs.
