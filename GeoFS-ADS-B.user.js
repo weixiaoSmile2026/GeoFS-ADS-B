@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         GeoFS ADS-B
+// @name         GeoFS ADS-B (原生渲染版)
 // @author       Smile and SeaBus
-// @namespace    geofs.opensky.adsb.selfhosted
-// @version      1.3.0
-// @description  ADS-B can be used in GeoFS (Depth Tested Labels)
+// @namespace    geofs.opensky.adsb.selfhosted.native
+// @version      1.0.0
+// @description  向自架中央伺服器拿真實航班資料，直接餵給 GeoFS 原生的 multiplayer 系統渲染（模型/標籤/地面高度校正都交給遊戲自己處理）。注意：受限於 GeoFS 內建 10 公里模型可視距離。
 // @match        http://*/geofs.php*
 // @match        https://*/geofs.php*
 // @run-at       document-idle
@@ -17,50 +17,29 @@
 
     const CONFIG = {
         SERVER_URL: "https://smile-code-test.duckdns.org/geofs-adsb/latest.json",
-        POLL_INTERVAL_MS: 20000,
-        INTERPOLATION_TICK_MS: 150,
-        STALE_REMOVE_MS: 27000,
-        DISPLAY_RADIUS_KM: 50,
-        MODEL_SCALE: 1.0,
-        MODEL_MIN_PIXEL_SIZE: 48,
-        SHOW_LABEL: true,
-        ENABLED: true
+        POLL_INTERVAL_MS: 20000,       // 多久跟伺服器拿一次新資料
+        INTERPOLATION_TICK_MS: 150,    // 多久把插值後的座標餵給 GeoFS 原生系統一次
+        DISPLAY_RADIUS_KM: 50,         // 篩選範圍（注意：GeoFS 原生系統本身還會再用 10km/50km 的規則決定要不要真的顯示模型）
+        ENABLED: true,
     };
 
-    const LOG = (...a) => console.log('%c[GeoFS-ADSB-Self]', 'color:#0af;font-weight:bold', ...a);
-    const WARN = (...a) => console.warn('%c[GeoFS-ADSB-Self]', 'color:#f80;font-weight:bold', ...a);
+    const LOG = (...a) => console.log('%c[GeoFS-ADSB-Native]', 'color:#0af;font-weight:bold', ...a);
+    const WARN = (...a) => console.warn('%c[GeoFS-ADSB-Native]', 'color:#f80;font-weight:bold', ...a);
 
-    let geofs, Cesium, viewer;
+    let geofs, multiplayer;
     let isEnabled = CONFIG.ENABLED;
-    const tracked = new Map();
-    let fetchInFlight = false;
 
     function waitForGeoFS(cb) {
         const timer = setInterval(() => {
             const g = unsafeWindow.geofs;
-            if (g && g.aircraft && g.aircraft.instance && g.aircraft.instance.llaLocation && g.api && g.api.viewer && unsafeWindow.Cesium && g.aircraftList) {
+            const mp = unsafeWindow.multiplayer;
+            if (g && mp && g.aircraft && g.aircraft.instance && g.aircraft.instance.llaLocation && g.aircraftList) {
                 clearInterval(timer);
                 geofs = g;
-                Cesium = unsafeWindow.Cesium;
-                viewer = g.api.viewer;
+                multiplayer = mp;
                 cb();
             }
         }, 500);
-    }
-
-    const modelUriCache = new Map();
-    function resolveModelUri(aircraftId) {
-        if (modelUriCache.has(aircraftId)) return modelUriCache.get(aircraftId);
-        const rec = geofs.aircraftList[aircraftId];
-        if (!rec) {
-            WARN('找不到機型 ID ' + aircraftId);
-            modelUriCache.set(aircraftId, null);
-            return null;
-        }
-        const files = rec.multiplayerFiles ? rec.multiplayerFiles.split(',') : ['multiplayer.glb', 'multiplayer-low.glb'];
-        const uri = geofs.url + rec.path + files[0].trim();
-        modelUriCache.set(aircraftId, uri);
-        return uri;
     }
 
     function angleLerp(a, b, t) {
@@ -79,21 +58,6 @@
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
-    function resolveGroundAltitude(lat, lon) {
-        try {
-            if (geofs.api && typeof geofs.api.getGroundAltitude === 'function') {
-                const h = geofs.api.getGroundAltitude([lat, lon, 0]);
-                if (typeof h === 'number' && isFinite(h)) return h;
-            }
-        } catch (e) {}
-        try {
-            const carto = Cesium.Cartographic.fromDegrees(lon, lat);
-            const h = viewer.scene.globe.getHeight(carto);
-            if (typeof h === 'number' && isFinite(h)) return h;
-        } catch (e) {}
-        return null;
-    }
-
     function fetchFromServer() {
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
@@ -101,14 +65,16 @@
                 url: CONFIG.SERVER_URL + '?_=' + Date.now(),
                 onload: (res) => {
                     if (res.status !== 200) { reject(new Error('HTTP ' + res.status)); return; }
-                    try {
-                        resolve(JSON.parse(res.responseText));
-                    } catch (e) { reject(e); }
+                    try { resolve(JSON.parse(res.responseText)); } catch (e) { reject(e); }
                 },
                 onerror: reject,
             });
         });
     }
+
+    // ---------- 追蹤中的航班 ----------
+    // tracked[icao24] = { prev, next, fetchedAt, callsign, aircraftId }
+    const tracked = new Map();
 
     function interpolatedSnapshot(t2, now) {
         const t = Math.min(1, (now - t2.fetchedAt) / CONFIG.POLL_INTERVAL_MS);
@@ -121,88 +87,7 @@
         };
     }
 
-    function createEntity(icao24, callsign, aircraftId) {
-        const modelUri = resolveModelUri(aircraftId);
-        return viewer.entities.add({
-            id: 'geofs-adsb-' + icao24,
-            position: Cesium.Cartesian3.fromDegrees(0, 0, 0),
-            model: modelUri
-                ? { uri: modelUri, scale: CONFIG.MODEL_SCALE, minimumPixelSize: CONFIG.MODEL_MIN_PIXEL_SIZE }
-                : undefined,
-            box: modelUri
-                ? undefined
-                : { dimensions: new Cesium.Cartesian3(38, 34, 12), material: Cesium.Color.YELLOW.withAlpha(0.5), outline: true, outlineColor: Cesium.Color.BLACK },
-            label: CONFIG.SHOW_LABEL
-                ? {
-                      text: ' ' + callsign.trim() + ' ',
-                      font: 'bold 15px "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-                      fillColor: Cesium.Color.WHITE,
-                      outlineColor: Cesium.Color.BLACK,
-                      outlineWidth: 4,
-                      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-                      showBackground: true,
-                      backgroundColor: new Cesium.Color(0.08, 0.08, 0.08, 0.65),
-                      backgroundPadding: new Cesium.Cartesian2(8, 5),
-                      pixelOffset: new Cesium.Cartesian2(0, -35),
-                      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-                      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-
-                      // 1. 關閉無限深度穿越：改為 0（或是完全不寫），開啟正常的 3D 遮擋測試
-                      //    這能防止標籤穿透你自己的駕駛艙或飛機模型
-                      disableDepthTestDistance: 0,
-
-                      // 2. 將標籤稍微向鏡頭推進 2 公尺，防止被該 ADS-B 飛機自身的 3D 模組邊緣切掉
-                      eyeOffset: new Cesium.Cartesian3(0, 0, -2.0),
-
-                      scaleByDistance: new Cesium.NearFarScalar(100, 1.0, 50000, 0.6)
-                  }
-                : undefined,
-        });
-    }
-
-    function clearAllEntities() {
-        tracked.forEach((t2) => {
-            viewer.entities.remove(t2.entity);
-        });
-        tracked.clear();
-    }
-
-    function toggleADSB(enable) {
-        isEnabled = enable !== undefined ? enable : !isEnabled;
-        if (!isEnabled) {
-            clearAllEntities();
-            LOG('ADS-B 已關閉');
-        } else {
-            LOG('ADS-B 已開啟');
-            runFetchCycle();
-        }
-    }
-
-    function createUI() {
-        const btn = document.createElement('button');
-        btn.innerHTML = isEnabled ? 'ADS-B: ON' : 'ADS-B: OFF';
-        btn.style.position = 'absolute';
-        btn.style.top = '10px';
-        btn.style.right = '10px';
-        btn.style.zIndex = '10000';
-        btn.style.padding = '6px 12px';
-        btn.style.backgroundColor = isEnabled ? '#28a745' : '#dc3545';
-        btn.style.color = '#ffffff';
-        btn.style.border = 'none';
-        btn.style.borderRadius = '4px';
-        btn.style.cursor = 'pointer';
-        btn.style.fontWeight = 'bold';
-        btn.style.fontFamily = 'sans-serif';
-
-        btn.onclick = () => {
-            toggleADSB();
-            btn.innerHTML = isEnabled ? 'ADS-B: ON' : 'ADS-B: OFF';
-            btn.style.backgroundColor = isEnabled ? '#28a745' : '#dc3545';
-        };
-
-        document.body.appendChild(btn);
-    }
-
+    let fetchInFlight = false;
     function runFetchCycle() {
         if (!isEnabled || fetchInFlight) return;
         fetchInFlight = true;
@@ -218,76 +103,84 @@
                 );
 
                 list.forEach((st) => {
-                    if (st.on_ground) {
-                        const groundAlt = resolveGroundAltitude(st.lat, st.lon);
-                        if (groundAlt !== null) st.alt = groundAlt + 5;
-                    }
-                });
-
-                const nearbyIds = new Set(list.map((st) => st.icao24));
-
-                list.forEach((st) => {
                     const existing = tracked.get(st.icao24);
                     const prevSnap = existing ? interpolatedSnapshot(existing, now) : { lat: st.lat, lon: st.lon, alt: st.alt, heading: st.heading };
 
-                    if (existing) {
-                        existing.prev = prevSnap;
-                        existing.next = st;
-                        existing.fetchedAt = now;
-                        existing.lastSeenAt = now;
-                        existing.callsign = st.callsign;
-                    } else {
-                        const entity = createEntity(st.icao24, st.callsign, st.geofs_aircraft_id);
-                        tracked.set(st.icao24, {
-                            entity,
-                            prev: prevSnap,
-                            next: st,
-                            fetchedAt: now,
-                            lastSeenAt: now,
-                            callsign: st.callsign,
-                            liveryIndex: st.livery_index,
-                        });
-                    }
+                    tracked.set(st.icao24, {
+                        prev: prevSnap,
+                        next: st,
+                        fetchedAt: now,
+                        callsign: st.callsign,
+                        aircraftId: st.geofs_aircraft_id,
+                        onGround: st.on_ground,
+                        speedMs: st.speed_ms,
+                    });
                 });
 
-                tracked.forEach((t2, id) => {
-                    const tooStale = now - t2.lastSeenAt > CONFIG.STALE_REMOVE_MS;
-                    const outOfRange = !nearbyIds.has(id);
-                    if (tooStale || outOfRange) {
-                        viewer.entities.remove(t2.entity);
-                        tracked.delete(id);
-                    }
+                // 範圍外的直接停止追蹤（不用手動清 GeoFS 那邊的物件，
+                // 原生系統偵測到 20~40 秒沒再收到更新會自動淡出移除）
+                const nearbyIds = new Set(list.map((st) => st.icao24));
+                tracked.forEach((_, id) => {
+                    if (!nearbyIds.has(id)) tracked.delete(id);
                 });
 
-                LOG(`伺服器共 ${data.aircraft ? data.aircraft.length : 0} 架全球航班，範圍 ${CONFIG.DISPLAY_RADIUS_KM}km 內 ${list.length} 架，畫面上共 ${tracked.size} 架`);
+                LOG(`伺服器共 ${data.aircraft ? data.aircraft.length : 0} 架全球航班，範圍 ${CONFIG.DISPLAY_RADIUS_KM}km 內 ${list.length} 架`);
             })
             .catch((e) => WARN('連線伺服器失敗：', e.message || e))
             .finally(() => { fetchInFlight = false; });
     }
 
+    // ---------- 插值渲染迴圈：把算好的座標餵回 GeoFS 原生的 multiplayer 系統 ----------
     function runInterpolationTick() {
         if (!isEnabled || tracked.size === 0) return;
         const now = Date.now();
+        const updates = [];
 
-        tracked.forEach((t2) => {
+        tracked.forEach((t2, icao24) => {
             const snap = interpolatedSnapshot(t2, now);
-            const position = Cesium.Cartesian3.fromDegrees(snap.lon, snap.lat, snap.alt);
-            const hpr = new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(snap.heading), 0, 0);
-            t2.entity.position = position;
-            t2.entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(position, hpr);
-            if (t2.entity.label && t2.entity.label.text.getValue() !== ' ' + t2.callsign.trim() + ' ') {
-                t2.entity.label.text = ' ' + t2.callsign.trim() + ' ';
-            }
+            updates.push({
+                id: 'adsb-' + icao24,
+                ad: true,           // 標記成 ADS-B，沿用 GeoFS 既有的開關判斷邏輯（geofs.preferences.adsb）
+                cs: t2.callsign,
+                ac: t2.aircraftId,  // GeoFS 機型 ID，交給原生系統自己去載入對應模型
+                co: [snap.lat, snap.lon, snap.alt, snap.heading, 0, 0], // [lat, lon, alt, heading, pitch, roll]
+                ve: [0, 0, 0, 0, 0, 0], // 速度交給我們自己的插值處理，這裡固定 0 避免原生系統再做一次外插
+                st: {
+                    gr: t2.onGround,   // 這個 flag 是 true 的話，原生系統會自動幫這架飛機校正到正確地面高度
+                    as: Math.round((t2.speedMs || 0) * 1.94384), // m/s -> knots
+                },
+                ti: multiplayer.getServerTime ? multiplayer.getServerTime() : now,
+            });
         });
+
+        multiplayer.updateUsers(updates);
+    }
+
+    function toggleADSB(enable) {
+        isEnabled = enable !== undefined ? enable : !isEnabled;
+        LOG(isEnabled ? 'ADS-B 已開啟' : 'ADS-B 已關閉（現有飛機會在 20~40 秒內自然淡出消失）');
+        if (isEnabled) runFetchCycle();
+    }
+
+    function createUI() {
+        const btn = document.createElement('button');
+        btn.innerHTML = isEnabled ? 'ADS-B: ON' : 'ADS-B: OFF';
+        Object.assign(btn.style, {
+            position: 'absolute', top: '10px', right: '10px', zIndex: '10000',
+            padding: '6px 12px', backgroundColor: isEnabled ? '#28a745' : '#dc3545',
+            color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer',
+            fontWeight: 'bold', fontFamily: 'sans-serif',
+        });
+        btn.onclick = () => {
+            toggleADSB();
+            btn.innerHTML = isEnabled ? 'ADS-B: ON' : 'ADS-B: OFF';
+            btn.style.backgroundColor = isEnabled ? '#28a745' : '#dc3545';
+        };
+        document.body.appendChild(btn);
     }
 
     waitForGeoFS(() => {
-        if (CONFIG.SERVER_URL.includes('你的主機IP或網域')) {
-            WARN('還沒填 SERVER_URL，改成你 Linux Mint 主機的實際位址。');
-            return;
-        }
-        LOG(`啟動。每 ${CONFIG.POLL_INTERVAL_MS / 1000} 秒向 ${CONFIG.SERVER_URL} 拿一次資料。`);
-
+        LOG(`啟動（原生渲染版）。每 ${CONFIG.POLL_INTERVAL_MS / 1000} 秒向伺服器拿一次資料。`);
         createUI();
         unsafeWindow.toggleADSB = toggleADSB;
 
