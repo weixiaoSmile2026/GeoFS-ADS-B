@@ -1,6 +1,5 @@
 # ✈️ GeoFS ADS-B Fix & Real-time Radar Tracker
 
-![](https://i.ibb.co/FbTFrFLq/image.png)
 
 
 An open-source, high-performance solution designed to fix the long-broken native ADS-B tracking in [GeoFS](https://www.geo-fs.com/). 
